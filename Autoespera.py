@@ -4,6 +4,7 @@ import pandas as pd
 from collections import Counter
 import argparse
 from datetime import datetime
+from openpyxl.styles import PatternFill
 
 def main(rtf_file_path):
     # Cargar el archivo RTF
@@ -20,6 +21,9 @@ def main(rtf_file_path):
     diagnostico = []
     cirugia = []
     fecha_inclusion = []  # Nueva lista para almacenar fechas
+
+    # Crear un relleno amarillo
+    amarillo = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
     # Patrón para identificar el número de historia (NºHª) que comienza con 3 o más dígitos
     historia_regex = re.compile(r'.\d{2}')
@@ -118,21 +122,22 @@ def main(rtf_file_path):
     # Para ver los pacientes que tienen dos intervenciones
     # Contar las ocurrencias de cada valor
     contador = Counter(numero_historia)
-
     # Filtrar los valores que aparecen más de una vez
     repetidos = [valor for valor, count in contador.items() if count > 1]
+    print('\n>> Los numeros de historia repetidos, donde se tendra que poner manuelmente la Fecha de inclusion son:\n' + str(repetidos))
 
     # Recorre el texto nuevamente para encontrar fechas
     for i, line in enumerate(lines):
+        historia_actual = line.strip()
+        fechas = []  # Lista para almacenar fechas encontradas
         # Verifica si la línea es un número de historia
         if historia_regex.match(line.strip()) and line.strip() in numero_historia and line.strip() not in repetidos:
-            historia_actual = line.strip()
-            fechas = []  # Lista para almacenar fechas encontradas
             # Buscar todas las fechas después del número de historia
             for j in range(i + 1, len(lines)):
                 fecha_match = fecha_regex_ext.search(lines[j])
                 if fecha_match and lines[j-1] in cirujanos:
                     fechas.append(fecha_match.group())
+                    break
             fecha_inclusion[numero_historia.index(historia_actual)] = fechas[0]
 
     # Crear un nuevo DataFrame con los datos actualizados
@@ -148,12 +153,86 @@ def main(rtf_file_path):
         'FECHA PREVISTA': None
     })
 
+    # Eliminar filas donde 'PACIENTE' comienza con 'PRUEBA PRUEBA' seguido de cualquier carácter
+    df_final = df_final[~df_final['PACIENTE'].str.match(r'^PRUEBA PRUEBA.*', na=False)]
+
+    # Añade la Fecha de Inclusion de los que no se han encontrado por expresion regular
+    array_fecha = []
+    flag_fecha = False
+    num_actual = None
+    num_pasados = []
+    for i, line in enumerate(lines):
+        historia_actual = line.strip()
+        if fecha_regex_ext.match(historia_actual) and flag_fecha:
+            array_fecha.append(historia_actual)
+            for num_pac in repetidos:
+                for index, row in df_final.iterrows():
+                    if num_pac == row['NºHª'] and row['NºHª'] == num_actual and row['Fecha de Inclusion'] is None and num_actual not in num_pasados:
+                        # Asegurarse de que el array tiene al menos 1 elemento
+                        if len(array_fecha) > 0:
+                            # Asignar el antepenúltimo valor a la columna Fecha de Inclusion
+                            df_final.at[index, 'Fecha de Inclusion'] = array_fecha[len(array_fecha) - 1] if len(array_fecha) > 2 else None
+                            num_pasados.append(num_actual)
+            array_fecha = []
+            flag_fecha = False
+        elif flag_fecha:
+            array_fecha.append(historia_actual)
+        if historia_actual in repetidos:
+            flag_fecha = True
+            for num_pac in repetidos:
+                if num_pac == historia_actual:
+                    num_actual = historia_actual
+                    break
+
+    # Convertir la columna 'Fecha de Inclusion' a formato datetime para poder ordenarla
+    df_final['Fecha de Inclusion'] = pd.to_datetime(df_final['Fecha de Inclusion'], format=r'%d/%m/%Y', errors='coerce')
+    # Ordenar el DataFrame por la columna 'Fecha de Inclusion' en orden ascendente
+    df_final = df_final.sort_values(by='Fecha de Inclusion', ascending=True).reset_index(drop=True)
+    # Formatear las fechas sin la parte de la hora
+    df_final['Fecha de Inclusion'] = df_final['Fecha de Inclusion'].dt.strftime(r'%d/%m/%Y')
+
+    # Inicializar una lista para almacenar los pacientes sin diagnóstico
+    pacientes_sin_diagnostico = []
+
+    # Recorrer el DataFrame y agregar a la lista los pacientes cuya columna DIAGNOSTICO esté vacía
+    for index, row in df_final.iterrows():
+        if not row['DIAGNOSTICO']:  # Si el diagnóstico está vacío o es None
+            pacientes_sin_diagnostico.append(row['NºHª'])
+    print('\n>> Pacientes con posible diagnostico erroneo:\n' + str(pacientes_sin_diagnostico))
+
+    # Añade el DIAGNOSTICO Y CIRUGIA de los que no se han encontrado por expresion regular
+    array = []
+    flag = False
+    num_actual = None
+    for i, line in enumerate(lines):
+        historia_actual = line.strip()
+        if historia_actual in cirujanos and flag:
+            for num_pac in pacientes_sin_diagnostico:
+                for index, row in df_final.iterrows():
+                    if num_pac == row['NºHª'] and row['NºHª'] == num_actual:
+                        # Asegurarse de que el array tiene al menos 2 elementos
+                        if len(array) > 0:
+                            # Asignar el antepenúltimo valor a la columna DIAGNOSTICO
+                            df_final.at[index, 'DIAGNOSTICO'] = array[-3] if len(array) > 2 else None
+                            # Asignar el penúltimo valor a la columna CIRUGIA
+                            df_final.at[index, 'CIRUGIA'] = array[-2]
+            array = []
+            flag = False
+        elif flag:
+            array.append(historia_actual)
+        if historia_actual in pacientes_sin_diagnostico:
+            flag = True
+            for num_pac in pacientes_sin_diagnostico:
+                if num_pac == historia_actual:
+                    num_actual = historia_actual
+                    break
+                
     fecha_actual = datetime.today().date()
     output_path = 'lista_espera-'+str(fecha_actual)+'.xlsx'
     # Guardar el DataFrame en un archivo Excel
     df_final.to_excel(output_path, index=False)
 
-    print(f"Archivo Excel guardado en: {output_path}")
+    print(f"\nArchivo Excel guardado en: {output_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Procesa un archivo RTF y guarda los resultados en un archivo Excel.')
