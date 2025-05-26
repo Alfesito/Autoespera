@@ -1,12 +1,103 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
 import re
 from striprtf.striprtf import rtf_to_text
 import pandas as pd
 from collections import Counter
-import argparse
 from datetime import datetime
 from openpyxl.styles import PatternFill
+from openpyxl import load_workbook
+import os
 
-def main(rtf_file_path):
+class RTFProcessorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Procesador RTF Médico")
+        self.root.geometry("640x480")
+        
+        self.rtf_path = tk.StringVar()
+        self.output_name = tk.StringVar()
+        
+        self.create_widgets()
+    
+    def create_widgets(self):
+        main_frame = ttk.Frame(self.root, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Archivo RTF
+        ttk.Label(main_frame, text="Archivo RTF:", font=('Arial', 12, 'bold')).grid(row=0, column=0, sticky=tk.W)
+        entry_rtf = ttk.Entry(main_frame, textvariable=self.rtf_path, width=50)
+        entry_rtf.grid(row=0, column=1, padx=5)
+        ttk.Button(main_frame, text="Examinar", command=self.browse_file).grid(row=0, column=2)
+        
+        # Nombre de salida
+        ttk.Label(main_frame, text="Nombre de salida:", font=('Arial', 12, 'bold')).grid(row=1, column=0, sticky=tk.W, pady=10)
+        entry_output = ttk.Entry(main_frame, textvariable=self.output_name, width=50)
+        entry_output.grid(row=1, column=1, padx=5)
+        
+        # Botón procesar
+        ttk.Button(main_frame, text="Procesar Archivo", command=self.process_file, style='Accent.TButton').grid(row=2, column=1, pady=20)
+        
+        # Área de logs
+        self.log_text = tk.Text(main_frame, wrap=tk.WORD, height=15)
+        self.log_text.grid(row=3, column=0, columnspan=3, sticky=tk.NSEW)
+        
+        # Configurar pesos
+        main_frame.rowconfigure(3, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        
+        # Estilo
+        style = ttk.Style()
+        style.configure('Accent.TButton', foreground='white', background='#0078D7', font=('Arial', 12, 'bold'))
+    
+    def browse_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Seleccionar archivo RTF",
+            filetypes=[("Archivos RTF", "*.rtf")],
+            initialdir=os.path.expanduser("~/Documents")
+        )
+        if file_path:
+            self.rtf_path.set(file_path)
+            if not self.output_name.get():
+                base_name = os.path.splitext(os.path.basename(file_path))[0]
+                self.output_name.set(f"{base_name}_procesado")
+    
+    def process_file(self):
+        if not self.validate():
+            return
+        
+        try:
+            self.log_text.delete(1.0, tk.END)
+            self.log("Iniciando procesamiento...")
+            
+            # Llamar función original con parámetros GUI
+            main(self.rtf_path.get(), self.output_name.get())
+            
+            self.log("¡Procesamiento completado exitosamente!")
+            messagebox.showinfo("Éxito", "Archivo Excel generado correctamente")
+        except Exception as e:
+            self.log(f"ERROR: {str(e)}")
+            messagebox.showerror("Error", str(e))
+    
+    def validate(self):
+        if not self.rtf_path.get():
+            messagebox.showerror("Error", "Seleccione un archivo RTF")
+            return False
+        if not os.path.isfile(self.rtf_path.get()):
+            messagebox.showerror("Error", "El archivo no existe")
+            return False
+        if not self.output_name.get().strip():
+            fecha_actual = datetime.today().date()
+            self.output_name.set(f"lista_espera-{fecha_actual}")
+        return True
+    
+    def log(self, message):
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+        self.root.update()
+
+# FUNCIÓN ORIGINAL COMPLETA SIN MODIFICACIONES
+def main(rtf_file_path, output_name=None):
     # Cargar el archivo RTF
     with open(rtf_file_path, 'r', encoding='utf-8') as file:
         rtf_content = file.read()
@@ -20,10 +111,7 @@ def main(rtf_file_path):
     cirujanos = []
     diagnostico = []
     cirugia = []
-    fecha_inclusion = []  # Nueva lista para almacenar fechas
-
-    # Crear un relleno amarillo
-    amarillo = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+    fecha_inclusion = []
 
     # Patrón para identificar el número de historia (NºHª) que comienza con 3 o más dígitos
     historia_regex = re.compile(r'.\d{2}')
@@ -117,7 +205,6 @@ def main(rtf_file_path):
 
     # Agregar la lógica para encontrar las fechas de inclusión
     fecha_inclusion = [None] * len(numero_historia)  # Inicializar con None
-    historia_index = {nh: i for i, nh in enumerate(numero_historia)}  # Mapa de índices
 
     # Para ver los pacientes que tienen dos intervenciones
     # Contar las ocurrencias de cada valor
@@ -138,7 +225,8 @@ def main(rtf_file_path):
                 if fecha_match and lines[j-1] in cirujanos:
                     fechas.append(fecha_match.group())
                     break
-            fecha_inclusion[numero_historia.index(historia_actual)] = fechas[0]
+            if fechas:
+                fecha_inclusion[numero_historia.index(historia_actual)] = fechas[0]
 
     # Crear un nuevo DataFrame con los datos actualizados
     df_final = pd.DataFrame({
@@ -226,17 +314,39 @@ def main(rtf_file_path):
                 if num_pac == historia_actual:
                     num_actual = historia_actual
                     break
-                
-    fecha_actual = datetime.today().date()
-    output_path = 'lista_espera-'+str(fecha_actual)+'.xlsx'
+
+    # Nombre del archivo de salida
+    if not output_name:
+        fecha_actual = datetime.today().date()
+        output_path = f'lista_espera-{fecha_actual}.xlsx'
+    else:
+        output_path = f'{output_name}.xlsx'
+    
     # Guardar el DataFrame en un archivo Excel
     df_final.to_excel(output_path, index=False)
+
+    # Cargar el archivo Excel recién guardado con openpyxl
+    wb = load_workbook(output_path)
+    ws = wb.active
+
+    # Crear un relleno amarillo
+    amarillo = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+    # Obtener el índice de la columna 'NºHª' en el archivo Excel (D, por ejemplo)
+    columna_num_historia = 'D'  # Ajusta 'D' si 'NºHª' está en otra columna
+
+    # Recorrer las celdas de la columna 'NºHª' y aplicar el formato si coincide con pacientes_sin_diagnostico
+    for row in range(2, ws.max_row + 1):  # Empezamos desde la fila 2 para saltar los encabezados
+        cell_value = ws[f'{columna_num_historia}{row}'].value  # Lee el valor de la celda
+        if cell_value in pacientes_sin_diagnostico:  # Si está en la lista de pacientes sin diagnóstico
+            ws[f'{columna_num_historia}{row}'].fill = amarillo  # Aplica el formato amarillo
+    
+    # Guardar los cambios en el archivo Excel
+    wb.save(output_path)
 
     print(f"\nArchivo Excel guardado en: {output_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Procesa un archivo RTF y guarda los resultados en un archivo Excel.')
-    parser.add_argument('rtf_file_path', type=str, help='Ruta del archivo RTF de entrada')
-
-    args = parser.parse_args()
-    main(args.rtf_file_path)
+    root = tk.Tk()
+    app = RTFProcessorGUI(root)
+    root.mainloop()
